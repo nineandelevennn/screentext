@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OCR — Текст со скриншота</title>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --text: #0f172a;
+      --muted: #64748b;
+      --border: #cbd5e1;
+    }
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body {
+      margin: 0; padding: 24px;
+      background-color: var(--bg); color: var(--text);
+      display: flex; justify-content: center;
+    }
+    .container {
+      width: 100%; max-width: 900px;
+      background: var(--card); border-radius: 16px;
+      padding: 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+    }
+    h1 { margin-top: 0; font-size: 22px; display: flex; justify-content: space-between; align-items: center; }
+    .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+    select, button, .file-label {
+      padding: 10px 16px; border-radius: 8px; font-size: 14px; font-weight: 500;
+      cursor: pointer; border: 1px solid var(--border); background: #fff;
+      transition: all 0.15s ease;
+    }
+    .btn-primary {
+      background: var(--primary); color: #fff; border: none;
+    }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .file-label { background: #f1f5f9; border: 1px solid var(--border); display: inline-block; }
+    .file-label:hover { background: #e2e8f0; }
+    input[type="file"] { display: none; }
+    
+    .workspace { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 700px) { .workspace { grid-template-columns: 1fr; } }
+
+    .dropzone {
+      border: 2px dashed var(--border); border-radius: 12px;
+      min-height: 280px; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; text-align: center;
+      padding: 16px; color: var(--muted); position: relative; overflow: hidden;
+      background: #fcfcfd;
+    }
+    .dropzone.dragover { border-color: var(--primary); background: #eff6ff; }
+    .dropzone img { max-width: 100%; max-height: 260px; border-radius: 8px; object-fit: contain; }
+    
+    .output-box { display: flex; flex-direction: column; }
+    textarea {
+      width: 100%; height: 280px; padding: 12px;
+      border-radius: 12px; border: 1px solid var(--border);
+      font-size: 14px; line-height: 1.5; resize: vertical;
+    }
+    textarea:focus { outline: 2px solid var(--primary); border-color: transparent; }
+
+    .status-bar { margin-top: 12px; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 10px; }
+    progress { width: 100%; height: 8px; border-radius: 4px; display: none; }
+    kbd {
+      background: #e2e8f0; padding: 2px 6px; border-radius: 4px;
+      font-size: 12px; color: #334155; font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h1>
+    <span>Распознавание текста (OCR)</span>
+  </h1>
+
+  <div class="controls">
+    <label class="file-label">
+      📁 Выбрать скриншот из папки
+      <input type="file" id="fileInput" accept="image/*">
+    </label>
+
+    <select id="langSelect" title="Язык текста на скриншоте">
+      <option value="rus+eng" selected>Русский + Английский</option>
+      <option value="rus">Только Русский</option>
+      <option value="eng">Только Английский</option>
+    </select>
+
+    <button class="btn-primary" id="copyBtn">📋 Скопировать текст</button>
+  </div>
+
+  <div class="workspace">
+    <div class="dropzone" id="dropzone">
+      <div id="placeholder">
+        <p style="font-size: 16px; margin-bottom: 8px; color: #334155;">
+          Нажмите <kbd>Cmd + V</kbd> (или <kbd>Ctrl + V</kbd>), чтобы вставить скриншот
+        </p>
+        <p style="font-size: 13px; margin: 0;">или перетащите картинку сюда из папки</p>
+      </div>
+      <img id="preview" style="display: none;" alt="Превью скриншота">
+    </div>
+
+    <div class="output-box">
+      <textarea id="resultText" placeholder="Здесь появится распознанный текст..."></textarea>
+    </div>
+  </div>
+
+  <div class="status-bar">
+    <span id="statusText">Ожидание изображения...</span>
+    <progress id="progressBar" value="0" max="1"></progress>
+  </div>
+</div>
+
+<script>
+  const fileInput = document.getElementById('fileInput');
+  const dropzone = document.getElementById('dropzone');
+  const preview = document.getElementById('preview');
+  const placeholder = document.getElementById('placeholder');
+  const resultText = document.getElementById('resultText');
+  const statusText = document.getElementById('statusText');
+  const progressBar = document.getElementById('progressBar');
+  const langSelect = document.getElementById('langSelect');
+  const copyBtn = document.getElementById('copyBtn');
+
+  // 1. Вставка через Cmd+V / Ctrl+V
+  window.addEventListener('paste', (e) => {
+    const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+    for (const item of items) {
+      if (item.type.indexOf('image') === 0) {
+        const file = item.getAsFile();
+        handleImage(file);
+        break;
+      }
+    }
+  });
+
+  // 2. Выбор файла через кнопку
+  fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) {
+      handleImage(e.target.files[0]);
+    }
+  });
+
+  // 3. Перетаскивание файла (Drag & Drop)
+  dropzone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropzone.classList.add('dragover');
+  });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+    if (e.dataTransfer.files.length > 0) {
+      handleImage(e.dataTransfer.files[0]);
+    }
+  });
+
+  // 4. Копирование результата
+  copyBtn.addEventListener('click', () => {
+    if (!resultText.value) return;
+    navigator.clipboard.writeText(resultText.value);
+    const originalText = copyBtn.textContent;
+    copyBtn.textContent = '✅ Скопировано!';
+    setTimeout(() => copyBtn.textContent = originalText, 1500);
+  });
+
+  // Обработка и распознавание изображения
+  async function handleImage(file) {
+    const imageUrl = URL.createObjectURL(file);
+    preview.src = imageUrl;
+    preview.style.display = 'block';
+    placeholder.style.display = 'none';
+    resultText.value = '';
+    
+    progressBar.style.display = 'block';
+    progressBar.value = 0;
+    statusText.textContent = 'Загрузка языковой модели...';
+
+    try {
+      const lang = langSelect.value;
+      const worker = await Tesseract.createWorker(lang, 1, {
+        logger: m => {
+          if (m.status === 'recognizing text') {
+            statusText.textContent = `Распознавание: ${Math.round(m.progress * 100)}%`;
+            progressBar.value = m.progress;
+          } else {
+            statusText.textContent = m.status;
+          }
+        }
+      });
+
+      const { data: { text } } = await worker.recognize(file);
+      resultText.value = text.trim();
+      statusText.textContent = 'Готово!';
+      progressBar.style.display = 'none';
+      await worker.terminate();
+    } catch (err) {
+      statusText.textContent = 'Ошибка при распознавании: ' + err.message;
+      progressBar.style.display = 'none';
+    }
+  }
+</script>
+
+</body>
+</html>
